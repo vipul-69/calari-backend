@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 // services/foodAnalysis.ts
 import Groq from 'groq-sdk';
 import { type FoodAnalysis } from "../types";
@@ -21,7 +22,9 @@ interface FoodAnalysisContext {
   };
 }
 
-// Initialize Groq client
+/**
+ * Initialize Groq client
+ */
 const createGroqClient = (): Groq => {
   if (!process.env.GROQ_API_KEY) {
     throw new Error("GROQ_API_KEY environment variable is required");
@@ -32,7 +35,9 @@ const createGroqClient = (): Groq => {
   });
 };
 
-// Enhanced URL to base64 conversion
+/**
+ * Enhanced URL to base64 conversion
+ */
 const urlToBase64 = async (url: string): Promise<string> => {
   try {
     const response = await fetch(url);
@@ -49,6 +54,53 @@ const urlToBase64 = async (url: string): Promise<string> => {
   } catch (error: any) {
     throw new Error(`Failed to convert URL to base64: ${error.message}`);
   }
+};
+
+/**
+ * Fix mathematical expressions in JSON strings (e.g., "1.01+2.03" becomes "3.04")
+ */
+const fixMacrosInJsonString = (jsonStr: string): string => {
+  // Handle addition: 1.01+2.03 → 3.04
+  let fixed = jsonStr.replace(/(\d+\.?\d*)\+(\d+\.?\d*)/g, (_, num1, num2) => {
+    const sum = parseFloat(num1) + parseFloat(num2);
+    return sum.toFixed(2);
+  });
+  
+  // Handle subtraction: 5.5-1.2 → 4.30
+  fixed = fixed.replace(/(\d+\.?\d*)-(\d+\.?\d*)/g, (_, num1, num2) => {
+    const diff = parseFloat(num1) - parseFloat(num2);
+    return Math.max(0, diff).toFixed(2); // Ensure non-negative for nutrition values
+  });
+  
+  // Handle multiplication: 2*3.5 → 7.00
+  fixed = fixed.replace(/(\d+\.?\d*)\*(\d+\.?\d*)/g, (_, num1, num2) => {
+    const product = parseFloat(num1) * parseFloat(num2);
+    return product.toFixed(2);
+  });
+  
+  // Handle division: 10/2 → 5.00
+  fixed = fixed.replace(/(\d+\.?\d*)\/(\d+\.?\d*)/g, (_, num1, num2) => {
+    const divisor = parseFloat(num2);
+    if (divisor === 0) return "0.00";
+    const quotient = parseFloat(num1) / divisor;
+    return quotient.toFixed(2);
+  });
+  
+  return fixed;
+};
+
+/**
+ * Validate and clean numeric values in parsed JSON
+ */
+const sanitizeNumericValue = (value: any): number => {
+  if (typeof value === 'string') {
+    // Remove any remaining non-numeric characters except decimal point
+    const cleaned = value.replace(/[^\d.]/g, '');
+    const num = parseFloat(cleaned);
+    return isNaN(num) ? 0 : Math.max(0, num); // Ensure non-negative
+  }
+  const num = Number(value);
+  return isNaN(num) ? 0 : Math.max(0, num);
 };
 
 /**
@@ -82,10 +134,17 @@ Give me a JSON response like this:
 ✗ Raw ingredients that need cooking (raw meat, flour, etc.)
 ✗ Food packaging or wrappers without visible food
 
+## CRITICAL RULES
+- Return ONLY valid JSON with the exact format shown above
+- No additional text, explanations, or formatting
+- Use only boolean values (true/false), not strings
+
 Be helpful but accurate - I'm counting on you to identify real food items correctly!`;
 
     // Convert URL to base64
+    console.log('Converting image to base64...');
     const base64Image = await urlToBase64(imageUrl);
+    console.log('Base64 conversion successful, length:', base64Image.length);
 
     // Make the API call with proper multimodal format
     const completion = await groq.chat.completions.create({
@@ -112,9 +171,13 @@ Be helpful but accurate - I'm counting on you to identify real food items correc
     });
 
     const response = completion.choices[0]?.message?.content || "";
+    console.log('Groq validation response:', response);
     
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    // Fix any mathematical expressions before parsing
+    const fixedResponse = fixMacrosInJsonString(response);
     
+    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
+    console.log(jsonMatch)
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       return {
@@ -128,6 +191,7 @@ Be helpful but accurate - I'm counting on you to identify real food items correc
       reason: "Unable to analyze image content"
     };
   } catch (error: any) {
+    console.error('Food validation error:', error);
     return {
       isFood: false,
       reason: `Error occurred during food validation: ${error.message}`
@@ -203,9 +267,11 @@ You're a personal nutrition coach helping someone track their food and make bett
 ## Critical Requirements
 - Use PRECISE USDA nutritional values - accuracy is essential
 - Estimate portions realistically based on visual cues
-- Numbers only (no strings) for all macro values
+- **ALL MACRO VALUES MUST BE PLAIN NUMBERS - NEVER use mathematical expressions like "1+2" or "5.5-1.2"**
+- **Calculate all values and return final numbers only (e.g., use 3.04, not 1.01+2.03)**
 - Must return valid, parseable JSON
-- No extra text outside the JSON structure`;
+- No extra text outside the JSON structure
+- Use only numeric values for macros, never strings or expressions`;
 
   if (context) {
     const remaining = {
@@ -274,15 +340,20 @@ No user context provided - concentrate on accurate food identification and nutri
 };
 
 /**
- * Parse food analysis response
+ * Parse food analysis response with enhanced error handling and mathematical expression fixing
  */
 const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodAnalysis => {
   try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    // First, fix any mathematical expressions in the response
+    const fixedResponse = fixMacrosInJsonString(response);
+    console.log('Fixed response applied');
+    
+    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error("No valid JSON found in response");
     }
-
+    
+    console.log('JSON match found:', jsonMatch[0]);
     const parsed = JSON.parse(jsonMatch[0]);
     
     if (!parsed.foodItems || !Array.isArray(parsed.foodItems)) {
@@ -298,17 +369,17 @@ const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodA
         name: item.name || "Unknown food",
         quantity: item.quantity || "Unknown quantity",
         macros: {
-          calories: Number(item.macros?.calories || 0),
-          protein: Number(item.macros?.protein || 0),
-          carbs: Number(item.macros?.carbs || 0),
-          fat: Number(item.macros?.fat || 0)
+          calories: sanitizeNumericValue(item.macros?.calories || 0),
+          protein: sanitizeNumericValue(item.macros?.protein || 0),
+          carbs: sanitizeNumericValue(item.macros?.carbs || 0),
+          fat: sanitizeNumericValue(item.macros?.fat || 0)
         }
       })),
       totalMacros: {
-        calories: Number(parsed.totalMacros.calories || 0),
-        protein: Number(parsed.totalMacros.protein || 0),
-        carbs: Number(parsed.totalMacros.carbs || 0),
-        fat: Number(parsed.totalMacros.fat || 0)
+        calories: sanitizeNumericValue(parsed.totalMacros.calories || 0),
+        protein: sanitizeNumericValue(parsed.totalMacros.protein || 0),
+        carbs: sanitizeNumericValue(parsed.totalMacros.carbs || 0),
+        fat: sanitizeNumericValue(parsed.totalMacros.fat || 0)
       }
     };
 
@@ -327,10 +398,10 @@ const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodA
           name: food.name || "Unknown food",
           quantity: food.quantity || "Unknown quantity",
           macros: {
-            calories: Number(food.macros?.calories || 0),
-            protein: Number(food.macros?.protein || 0),
-            carbs: Number(food.macros?.carbs || 0),
-            fat: Number(food.macros?.fat || 0)
+            calories: sanitizeNumericValue(food.macros?.calories || 0),
+            protein: sanitizeNumericValue(food.macros?.protein || 0),
+            carbs: sanitizeNumericValue(food.macros?.carbs || 0),
+            fat: sanitizeNumericValue(food.macros?.fat || 0)
           },
           reason: food.reason || "Complements your meal"
         }));
@@ -338,10 +409,10 @@ const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodA
 
       if (parsed.suggestion.completeMealMacros) {
         result.suggestion.completeMealMacros = {
-          calories: Number(parsed.suggestion.completeMealMacros.calories || 0),
-          protein: Number(parsed.suggestion.completeMealMacros.protein || 0),
-          carbs: Number(parsed.suggestion.completeMealMacros.carbs || 0),
-          fat: Number(parsed.suggestion.completeMealMacros.fat || 0)
+          calories: sanitizeNumericValue(parsed.suggestion.completeMealMacros.calories || 0),
+          protein: sanitizeNumericValue(parsed.suggestion.completeMealMacros.protein || 0),
+          carbs: sanitizeNumericValue(parsed.suggestion.completeMealMacros.carbs || 0),
+          fat: sanitizeNumericValue(parsed.suggestion.completeMealMacros.fat || 0)
         };
       }
     }
@@ -349,6 +420,7 @@ const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodA
     return result;
     
   } catch (error) {
+    console.error("Error parsing analysis response:", error);
     
     return {
       foodItems: [
@@ -379,7 +451,9 @@ export const analyzeFoodFromImage = async (
     const groq = createGroqClient();
     const analysisPrompt = createFoodAnalysisPrompt(context);
     
+    console.log('Converting image to base64 for analysis...');
     const base64Image = await urlToBase64(imageUrl);
+    console.log('Base64 conversion successful, proceeding with analysis...');
 
     const completion = await groq.chat.completions.create({
       model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -405,10 +479,12 @@ export const analyzeFoodFromImage = async (
     });
 
     const response = completion.choices[0]?.message?.content || "";
+    console.log('Analysis complete, parsing response...');
     
     return parseFoodAnalysisResponse(response, !!context);
     
   } catch (error: any) {
+    console.error('Food analysis failed:', error);
     throw new Error(`Food analysis failed: ${error.message}`);
   }
 };
@@ -492,6 +568,8 @@ You're a personal nutrition coach helping someone track their food. They've told
 - Use USDA nutrition database accuracy
 - If quantity is vague, make reasonable assumptions and mention them
 - Handle food variations intelligently (e.g., "chicken" → assume grilled breast)
+- **ALL MACRO VALUES MUST BE CALCULATED NUMBERS - NEVER use expressions like "1+2" or "5.5-1.2"**
+- **Return final computed values only (e.g., use 3.04, not 1.01+2.03)**
 - All numerical values must be numbers, not strings
 - Return only valid JSON`;
 
@@ -548,6 +626,7 @@ You're a personal nutrition coach helping someone track their food. They've told
 Be helpful, specific, and focused on their success!`;
     }
 
+    console.log('Analyzing text input:', { foodName, quantity });
 
     const completion = await groq.chat.completions.create({
       model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -562,10 +641,12 @@ Be helpful, specific, and focused on their success!`;
     });
 
     const response = completion.choices[0]?.message?.content || "";
+    console.log('Text analysis complete, parsing response...');
     
     return parseFoodAnalysisResponse(response, !!context);
     
   } catch (error: any) {
+    console.error('Text food analysis failed:', error);
     throw new Error(`Text food analysis failed: ${error.message}`);
   }
 };

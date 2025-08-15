@@ -156,6 +156,7 @@ export const getUser = async (req: Request, res: Response) => {
     const user = result.rows[0]
     res.json(user)
   } catch (error: any) {
+    console.log(error.message)
     return handleDatabaseError(error, res)
   }
 }

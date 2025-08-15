@@ -71,6 +71,7 @@ export const analyzeFoodImage = async (req: Request, res: Response): Promise<voi
       return;
     }
 
+
     // Step 2: Analyze food image
     const analysis = await analyzeFoodFromImage(imageUrl, context);
     
@@ -206,6 +207,7 @@ export const analyzeFoodText = async (req: Request, res: Response): Promise<void
       responseData.hasRecommendation = false;
       responseData.hasComplementaryFoods = false;
     }
+    console.log(responseData)
     res.json(responseData);
 
   } catch (error: any) {
