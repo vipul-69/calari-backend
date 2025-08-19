@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { validateFoodImage, analyzeFoodFromImage, analyzeFoodFromText, validateFoodTextInput } from '../services/food.service';
+import { suggestMacrosWithGroq, validateUserDetailsString } from '../services/food.service';
 
 interface FoodAnalysisRequest {
   imageUrl: string;
@@ -246,6 +247,153 @@ export const analyzeFoodText = async (req: Request, res: Response): Promise<void
       success: false,
       error: 'Analysis failed', 
       details: error.message || 'Unknown error occurred during analysis'
+    });
+  }
+};
+
+
+
+
+
+interface MacroSuggestionRequest {
+  userDetails: string;
+  age: number;
+}
+
+export const suggestMacros = async (req: Request, res: Response): Promise<void> => {
+  if (req.method !== 'POST') {
+    res.status(405).json({ 
+      success: false,
+      error: 'Method not allowed',
+      details: 'Only POST requests are supported'
+    });
+    return;
+  }
+
+  try {
+    const { userDetails, age } = req.body;
+    console.log(userDetails, age)
+    // Validate required fields
+    if (!userDetails || age === undefined || age === null) {
+      res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields',
+        details: 'Both userDetails (string) and age (number) are required' 
+      });
+      return;
+    }
+
+    // Track analysis time
+    const analysisStartTime = Date.now();
+    
+    // Get macro suggestions from Groq AI
+    const macroSuggestions = await suggestMacrosWithGroq(userDetails, age);
+
+    const analysisEndTime = Date.now();
+    const analysisDuration = analysisEndTime - analysisStartTime;
+
+    // Build successful response
+    const responseData = {
+      success: true,
+      data: {
+        macros: {
+          calories: macroSuggestions.calories,
+          protein: macroSuggestions.protein,
+          carbs: macroSuggestions.carbs,
+          fat: macroSuggestions.fat
+        },
+        explanation: macroSuggestions.explanation,
+        breakdown: {
+          proteinPercentage: Math.round((macroSuggestions.protein * 4 / macroSuggestions.calories) * 100),
+          carbsPercentage: Math.round((macroSuggestions.carbs * 4 / macroSuggestions.calories) * 100),
+          fatPercentage: Math.round((macroSuggestions.fat * 9 / macroSuggestions.calories) * 100)
+        }
+      },
+      analysisType: 'macro_suggestion',
+      input: {
+        userDetails: userDetails.trim(),
+        age: age
+      },
+      metadata: {
+        analysisDuration: `${analysisDuration}ms`,
+        timestamp: new Date().toISOString(),
+        aiModel: 'meta-llama/llama-4-maverick-17b-128e-instruct'
+      }
+    };
+
+    console.log('Macro suggestion successful:', {
+      age,
+      detailsLength: userDetails.length,
+      duration: analysisDuration,
+      calories: macroSuggestions.calories
+    });
+
+    res.json(responseData);
+
+  } catch (error: any) {
+    console.error('Macro suggestion error:', error);
+
+    // Handle specific error types
+    if (error.message && error.message.includes('GROQ_API_KEY')) {
+      res.status(503).json({ 
+        success: false,
+        error: 'Service configuration error', 
+        details: 'AI analysis service is not properly configured'
+      });
+      return;
+    }
+
+    if (error.message && error.message.includes('API key')) {
+      res.status(503).json({ 
+        success: false,
+        error: 'Service configuration error', 
+        details: 'AI analysis service is temporarily unavailable'
+      });
+      return;
+    }
+
+    if (error.message && error.message.includes('rate limit')) {
+      res.status(429).json({ 
+        success: false,
+        error: 'Rate limit exceeded', 
+        details: 'Please wait a moment before making another request'
+      });
+      return;
+    }
+
+    if (error.message && error.message.includes('timeout')) {
+      res.status(504).json({ 
+        success: false,
+        error: 'Analysis timeout', 
+        details: 'The macro calculation took too long. Please try again.'
+      });
+      return;
+    }
+
+    if (error.message && error.message.includes('parse')) {
+      res.status(422).json({ 
+        success: false,
+        error: 'AI response parsing failed', 
+        details: 'Unable to process the AI response. Please try again with different details.'
+      });
+      return;
+    }
+
+    if (error.message && error.message.includes('network') || error.message.includes('fetch')) {
+      res.status(503).json({ 
+        success: false,
+        error: 'Network error', 
+        details: 'Unable to connect to AI service. Please check your connection and try again.'
+      });
+      return;
+    }
+
+    // Generic error response
+    res.status(500).json({ 
+      success: false,
+      error: 'Macro suggestion failed', 
+      details: error.message || 'Unknown error occurred during macro calculation',
+      timestamp: new Date().toISOString()
     });
   }
 };

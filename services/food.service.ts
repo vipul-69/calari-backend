@@ -354,6 +354,7 @@ const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodA
     }
     
     console.log('JSON match found:', jsonMatch[0]);
+    console.log(jsonMatch[0])
     const parsed = JSON.parse(jsonMatch[0]);
     
     if (!parsed.foodItems || !Array.isArray(parsed.foodItems)) {
@@ -681,4 +682,177 @@ export const validateFoodTextInput = (foodName: string, quantity: string): { isV
   }
 
   return { isValid: true };
+};
+
+
+/**
+ * Suggest daily macronutrients using Groq SDK based on user details string and age
+ */
+export const suggestMacrosWithGroq = async (
+  userDetailsString: string,
+  age: number
+): Promise<{
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  explanation?: string;
+}> => {
+  try {
+    const groq = createGroqClient();
+
+    const macroPrompt = `
+You're a professional nutritionist AI using USDA standards and evidence-based guidelines. 
+
+User Details: ${userDetailsString}
+Age: ${age} years
+
+Based on the provided information, calculate personalized daily macronutrient targets.
+
+## Your Task
+1. Parse the user details to extract gender, weight, height, activity level, and goals
+2. Calculate appropriate daily macronutrient targets using standard nutrition formulas
+3. Consider age-specific recommendations and activity adjustments
+
+## Response Format (Must be valid JSON)
+{
+  "calories": number,
+  "protein": number,
+  "carbs": number,
+  "fat": number,
+  "explanation": "brief reasoning for these recommendations"
+}
+
+## Calculation Guidelines
+- Use Mifflin-St Jeor equation for BMR calculation
+- Apply appropriate activity multipliers (sedentary: 1.2, light: 1.375, moderate: 1.55, active: 1.725, very_active: 1.9)
+- Protein: 1.2-2.0g per kg body weight depending on activity and goals
+- Fat: 20-35% of total calories (aim for 25%)
+- Carbs: Fill remaining calories after protein and fat
+- Adjust for goals (weight loss: -20%, weight gain: +15%)
+
+## Age Considerations
+- Ages 18-30: Standard calculations
+- Ages 31-50: Slightly reduced metabolism (-2%)
+- Ages 51+: Reduced metabolism (-5%), higher protein needs
+- Under 18: Growing needs (+10-15%)
+
+## Activity Level Interpretations
+- sedentary: desk job, minimal exercise
+- light: light exercise 1-3 days/week
+- moderate: moderate exercise 3-5 days/week
+- active: intense exercise 6-7 days/week
+- very_active: very intense exercise, physical job
+
+## Goal Adjustments
+- maintain: TDEE calories
+- lose/cut: TDEE - 20%
+- gain/bulk: TDEE + 15%
+
+**CRITICAL REQUIREMENTS:**
+- Return ONLY valid JSON with numeric values
+- ALL macro values must be final calculated numbers (no expressions like "100+50")
+- Be realistic with portion recommendations
+- Consider user's lifestyle and preferences mentioned in details string
+
+Provide accurate, science-based recommendations that the user can realistically follow.`;
+
+    console.log('Requesting macro suggestions from Groq...');
+
+    const completion = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+      messages: [
+        {
+          role: "user",
+          content: macroPrompt,
+        },
+      ],
+      temperature: 0.1, // Low temperature for consistent, accurate calculations
+      max_tokens: 1000,
+    });
+
+    const response = completion.choices[0]?.message?.content || "";
+    console.log('Groq macro response:', response);
+    
+    // Fix any mathematical expressions before parsing
+    const fixedResponse = fixMacrosInJsonString(response);
+    
+    // Extract JSON from response
+    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      
+      return {
+        calories: sanitizeNumericValue(parsed.calories || 2000),
+        protein: sanitizeNumericValue(parsed.protein || 150),
+        carbs: sanitizeNumericValue(parsed.carbs || 250),
+        fat: sanitizeNumericValue(parsed.fat || 60),
+        explanation: parsed.explanation || "Macro suggestions based on your profile"
+      };
+    }
+    
+    throw new Error("Unable to parse macro suggestions from response");
+    
+  } catch (error: any) {
+    console.error('Macro suggestion error:', error);
+    throw new Error(`Failed to get macro suggestions: ${error.message}`);
+  }
+};
+
+/**
+ * Validate user details string format
+ */
+export const validateUserDetailsString = (userDetailsString: string, age: number): { isValid: boolean; errors: string[] } => {
+  const errors: string[] = [];
+  
+  if (!userDetailsString || userDetailsString.trim().length === 0) {
+    errors.push("User details string is required");
+  }
+  
+  if (!age || age < 10 || age > 100) {
+    errors.push("Age must be between 10 and 100 years");
+  }
+  
+  // Check if essential information is present in the string
+  const lowerDetails = userDetailsString.toLowerCase();
+  
+  if (!lowerDetails.includes('gender') && !lowerDetails.includes('male') && !lowerDetails.includes('female')) {
+    errors.push("Gender information missing from user details");
+  }
+  
+  if (!lowerDetails.includes('weight')) {
+    errors.push("Weight information missing from user details");
+  }
+  
+  if (!lowerDetails.includes('height')) {
+    errors.push("Height information missing from user details");
+  }
+  
+  if (!lowerDetails.includes('activity')) {
+    errors.push("Activity level information missing from user details");
+  }
+  
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+};
+
+/**
+ * Parse user details string into structured format (optional helper)
+ */
+export const parseUserDetailsString = (userDetailsString: string): Record<string, string> => {
+  const details: Record<string, string> = {};
+  
+  // Simple parsing logic - you can enhance this based on your string format
+  const pairs = userDetailsString.split(',').map(pair => pair.trim());
+  
+  pairs.forEach(pair => {
+    const [key, value] = pair.split(':').map(item => item.trim());
+    if (key && value) {
+      details[key.toLowerCase()] = value;
+    }
+  });
+  
+  return details;
 };
