@@ -16,7 +16,7 @@ app.use(express.urlencoded({ extended: true }));
 
 
 app.use("/users", clerkMiddleware(), requireAuth(), userRoutes);
-app.use('/food', foodRoutes);
+app.use('/food',clerkMiddleware(), requireAuth(), foodRoutes);
 app.use('/upload',clerkMiddleware(), requireAuth(), uploadRoutes);
 app.use('/meals',clerkMiddleware(), requireAuth(), mealRoutes)
 app.use("/payments",paymentRoutes)

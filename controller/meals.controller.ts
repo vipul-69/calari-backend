@@ -67,7 +67,7 @@ export const getDailyMeals = async (req: AuthenticatedRequest, res: Response) =>
       // Return empty structure for new day
       res.status(200).json({
         success: true,
-        data: {
+        data: { 
           date,
           totalMacros: {
             calories: 0,

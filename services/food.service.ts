@@ -57,7 +57,7 @@ const urlToBase64 = async (url: string): Promise<string> => {
 };
 
 /**
- * Fix mathematical expressions in JSON strings (e.g., "1.01+2.03" becomes "3.04")
+ * Enhanced mathematical expressions fixing with better regex patterns
  */
 const fixMacrosInJsonString = (jsonStr: string): string => {
   // Handle addition: 1.01+2.03 → 3.04
@@ -90,6 +90,33 @@ const fixMacrosInJsonString = (jsonStr: string): string => {
 };
 
 /**
+ * Enhanced JSON string repair function
+ */
+const repairJsonString = (jsonStr: string): string => {
+  let repaired = jsonStr;
+  
+  // Remove trailing commas before closing brackets
+  repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
+  
+  // Remove control characters
+  repaired = repaired.replace(/[\x00-\x1f]+/g, '');
+  
+  // Quote unquoted keys (basic implementation)
+  repaired = repaired.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
+  
+  // Fix common string escaping issues
+  repaired = repaired.replace(/\\'/g, "'");
+  
+  // Remove any extra text before the first { or after the last }
+  const match = repaired.match(/\{[\s\S]*\}/);
+  if (match) {
+    repaired = match[0];
+  }
+  
+  return repaired;
+};
+
+/**
  * Validate and clean numeric values in parsed JSON
  */
 const sanitizeNumericValue = (value: any): number => {
@@ -104,13 +131,12 @@ const sanitizeNumericValue = (value: any): number => {
 };
 
 /**
- * Check if image contains food using Groq SDK
+ * Check if image contains food using Groq SDK with retry logic
  */
-export const validateFoodImage = async (imageUrl: string): Promise<{ isFood: boolean; reason: string }> => {
-  try {
-    const groq = createGroqClient();
-    
-    const validationPrompt = `
+export const validateFoodImage = async (imageUrl: string, maxRetries: number = 3): Promise<{ isFood: boolean; reason: string }> => {
+  const groq = createGroqClient();
+  
+  const validationPrompt = `
 You're a nutrition assistant helping someone track their food. Look at this image and determine if it contains actual food that can be eaten.
 
 ## Your Task
@@ -141,62 +167,74 @@ Give me a JSON response like this:
 
 Be helpful but accurate - I'm counting on you to identify real food items correctly!`;
 
-    // Convert URL to base64
-    console.log('Converting image to base64...');
-    const base64Image = await urlToBase64(imageUrl);
-    console.log('Base64 conversion successful, length:', base64Image.length);
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      console.log(`Food validation attempt ${attempt + 1}/${maxRetries}`);
+      
+      // Convert URL to base64
+      const base64Image = await urlToBase64(imageUrl);
 
-    // Make the API call with proper multimodal format
-    const completion = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: validationPrompt,
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: base64Image,
+      // Make the API call with proper multimodal format
+      const completion = await groq.chat.completions.create({
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: validationPrompt,
               },
-            },
-          ],
-        },
-      ],
-      temperature: 0.1,
-      max_tokens: 1000,
-    });
+              {
+                type: "image_url",
+                image_url: {
+                  url: base64Image,
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 1000,
+      });
 
-    const response = completion.choices[0]?.message?.content || "";
-    console.log('Groq validation response:', response);
-    
-    // Fix any mathematical expressions before parsing
-    const fixedResponse = fixMacrosInJsonString(response);
-    
-    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
-    console.log(jsonMatch)
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      return {
-        isFood: parsed.containsFood === true,
-        reason: parsed.reason || "No reason provided"
-      };
+      const response = completion.choices[0]?.message?.content || "";
+      console.log('Groq validation response:', response);
+      
+      // Fix any mathematical expressions and repair JSON
+      const fixedResponse = fixMacrosInJsonString(response);
+      const repairedResponse = repairJsonString(fixedResponse);
+      
+      const jsonMatch = repairedResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          isFood: parsed.containsFood === true,
+          reason: parsed.reason || "No reason provided"
+        };
+      }
+      
+      throw new Error("No valid JSON found in response");
+      
+    } catch (error: any) {
+      console.error(`Food validation attempt ${attempt + 1} failed:`, error);
+      
+      if (attempt === maxRetries - 1) {
+        return {
+          isFood: false,
+          reason: `Error occurred during food validation after ${maxRetries} attempts: ${error.message}`
+        };
+      }
+      
+      // Wait a bit before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
-    return {
-      isFood: false,
-      reason: "Unable to analyze image content"
-    };
-  } catch (error: any) {
-    console.error('Food validation error:', error);
-    return {
-      isFood: false,
-      reason: `Error occurred during food validation: ${error.message}`
-    };
   }
+
+  return {
+    isFood: false,
+    reason: "Unable to analyze image content after multiple attempts"
+  };
 };
 
 /**
@@ -269,9 +307,10 @@ You're a personal nutrition coach helping someone track their food and make bett
 - Estimate portions realistically based on visual cues
 - **ALL MACRO VALUES MUST BE PLAIN NUMBERS - NEVER use mathematical expressions like "1+2" or "5.5-1.2"**
 - **Calculate all values and return final numbers only (e.g., use 3.04, not 1.01+2.03)**
-- Must return valid, parseable JSON
-- No extra text outside the JSON structure
-- Use only numeric values for macros, never strings or expressions`;
+- Must return valid, parseable JSON with no extra text
+- No text before or after the JSON structure
+- Use only numeric values for macros, never strings or expressions
+- No trailing commas in JSON objects or arrays`;
 
   if (context) {
     const remaining = {
@@ -329,179 +368,16 @@ You're a personal nutrition coach helping someone track their food and make bett
 5. **Calculate complete meal macros** including your suggested additions
 
 Remember: Be encouraging, practical, and focus on helping them succeed with their goals!`;
-  } else {
-    prompt += `
-
-## Focus Mode
-No user context provided - concentrate on accurate food identification and nutritional analysis only. Skip recommendations and complementary foods.`;
   }
 
   return prompt;
 };
 
 /**
- * Parse food analysis response with enhanced error handling and mathematical expression fixing
+ * Enhanced text-based food analysis prompt creation
  */
-const parseFoodAnalysisResponse = (response: string, hasContext: boolean): FoodAnalysis => {
-  try {
-    // First, fix any mathematical expressions in the response
-    const fixedResponse = fixMacrosInJsonString(response);
-    console.log('Fixed response applied');
-    
-    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error("No valid JSON found in response");
-    }
-    
-    console.log('JSON match found:', jsonMatch[0]);
-    console.log(jsonMatch[0])
-    const parsed = JSON.parse(jsonMatch[0]);
-    
-    if (!parsed.foodItems || !Array.isArray(parsed.foodItems)) {
-      throw new Error("Invalid foodItems format");
-    }
-    
-    if (!parsed.totalMacros || typeof parsed.totalMacros !== 'object') {
-      throw new Error("Invalid totalMacros format");
-    }
-
-    const result: FoodAnalysis = {
-      foodItems: parsed.foodItems.map((item: any) => ({
-        name: item.name || "Unknown food",
-        quantity: item.quantity || "Unknown quantity",
-        macros: {
-          calories: sanitizeNumericValue(item.macros?.calories || 0),
-          protein: sanitizeNumericValue(item.macros?.protein || 0),
-          carbs: sanitizeNumericValue(item.macros?.carbs || 0),
-          fat: sanitizeNumericValue(item.macros?.fat || 0)
-        }
-      })),
-      totalMacros: {
-        calories: sanitizeNumericValue(parsed.totalMacros.calories || 0),
-        protein: sanitizeNumericValue(parsed.totalMacros.protein || 0),
-        carbs: sanitizeNumericValue(parsed.totalMacros.carbs || 0),
-        fat: sanitizeNumericValue(parsed.totalMacros.fat || 0)
-      }
-    };
-
-    if (hasContext && parsed.suggestion) {
-      result.suggestion = {
-        shouldEat: Boolean(parsed.suggestion.shouldEat),
-        reason: parsed.suggestion.reason || "No specific advice provided",
-        recommendedQuantity: parsed.suggestion.recommendedQuantity,
-        alternatives: Array.isArray(parsed.suggestion.alternatives) 
-          ? parsed.suggestion.alternatives 
-          : []
-      };
-
-      if (parsed.suggestion.complementaryFoods && Array.isArray(parsed.suggestion.complementaryFoods)) {
-        result.suggestion.mealCompletionSuggestions = parsed.suggestion.complementaryFoods.map((food: any) => ({
-          name: food.name || "Unknown food",
-          quantity: food.quantity || "Unknown quantity",
-          macros: {
-            calories: sanitizeNumericValue(food.macros?.calories || 0),
-            protein: sanitizeNumericValue(food.macros?.protein || 0),
-            carbs: sanitizeNumericValue(food.macros?.carbs || 0),
-            fat: sanitizeNumericValue(food.macros?.fat || 0)
-          },
-          reason: food.reason || "Complements your meal"
-        }));
-      }
-
-      if (parsed.suggestion.completeMealMacros) {
-        result.suggestion.completeMealMacros = {
-          calories: sanitizeNumericValue(parsed.suggestion.completeMealMacros.calories || 0),
-          protein: sanitizeNumericValue(parsed.suggestion.completeMealMacros.protein || 0),
-          carbs: sanitizeNumericValue(parsed.suggestion.completeMealMacros.carbs || 0),
-          fat: sanitizeNumericValue(parsed.suggestion.completeMealMacros.fat || 0)
-        };
-      }
-    }
-
-    return result;
-    
-  } catch (error) {
-    console.error("Error parsing analysis response:", error);
-    
-    return {
-      foodItems: [
-        {
-          name: "Analysis failed",
-          quantity: "Unknown",
-          macros: { calories: 0, protein: 0, carbs: 0, fat: 0 }
-        }
-      ],
-      totalMacros: { calories: 0, protein: 0, carbs: 0, fat: 0 },
-      suggestion: hasContext ? {
-        shouldEat: false,
-        reason: "I couldn't analyze this image properly. Could you try taking another photo or entering the food manually?",
-        alternatives: ["Try uploading a clearer image", "Enter the food details manually"]
-      } : undefined
-    };
-  }
-};
-
-/**
- * Main food analysis function using Groq SDK
- */
-export const analyzeFoodFromImage = async (
-  imageUrl: string,
-  context?: FoodAnalysisContext
-): Promise<FoodAnalysis> => {
-  try {
-    const groq = createGroqClient();
-    const analysisPrompt = createFoodAnalysisPrompt(context);
-    
-    console.log('Converting image to base64 for analysis...');
-    const base64Image = await urlToBase64(imageUrl);
-    console.log('Base64 conversion successful, proceeding with analysis...');
-
-    const completion = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: analysisPrompt,
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: base64Image,
-              },
-            },
-          ],
-        },
-      ],
-      temperature: 0.2, // Slightly higher for more natural language
-      max_tokens: 3000, // More tokens for detailed recommendations
-    });
-
-    const response = completion.choices[0]?.message?.content || "";
-    console.log('Analysis complete, parsing response...');
-    
-    return parseFoodAnalysisResponse(response, !!context);
-    
-  } catch (error: any) {
-    console.error('Food analysis failed:', error);
-    throw new Error(`Food analysis failed: ${error.message}`);
-  }
-};
-
-/**
- * Enhanced text-based food analysis with conversational recommendations
- */
-export const analyzeFoodFromText = async (
-  foodName: string,
-  quantity: string,
-  context?: FoodAnalysisContext
-): Promise<FoodAnalysis> => {
-  try {
-    const groq = createGroqClient();
-    
-    let textAnalysisPrompt = `
+const createTextFoodAnalysisPrompt = (foodName: string, quantity: string, context?: FoodAnalysisContext): string => {
+  let textAnalysisPrompt = `
 You're a personal nutrition coach helping someone track their food. They've told you about "${foodName}" in the quantity "${quantity}". Give them accurate nutritional info and helpful advice.
 
 ## Your Task
@@ -533,8 +409,8 @@ You're a personal nutrition coach helping someone track their food. They've told
     "fat": total_grams
   }`;
 
-    if (context) {
-      textAnalysisPrompt += `,
+  if (context) {
+    textAnalysisPrompt += `,
   "suggestion": {
     "shouldEat": boolean,
     "reason": "friendly, conversational advice tailored to their goals",
@@ -560,9 +436,9 @@ You're a personal nutrition coach helping someone track their food. They've told
       "fat": total_with_additions
     }
   }`;
-    }
+  }
 
-    textAnalysisPrompt += `
+  textAnalysisPrompt += `
 }
 
 ## Quality Standards
@@ -572,24 +448,25 @@ You're a personal nutrition coach helping someone track their food. They've told
 - **ALL MACRO VALUES MUST BE CALCULATED NUMBERS - NEVER use expressions like "1+2" or "5.5-1.2"**
 - **Return final computed values only (e.g., use 3.04, not 1.01+2.03)**
 - All numerical values must be numbers, not strings
-- Return only valid JSON`;
+- Return only valid JSON with no extra text
+- No trailing commas in JSON objects or arrays`;
 
-    if (context) {
-      const remaining = {
-        calories: Math.max(0, context.totalMacros.calories - context.consumedMacros.calories),
-        protein: Math.max(0, context.totalMacros.protein - context.consumedMacros.protein),
-        carbs: Math.max(0, context.totalMacros.carbs - context.consumedMacros.carbs),
-        fat: Math.max(0, context.totalMacros.fat - context.consumedMacros.fat),
-      };
+  if (context) {
+    const remaining = {
+      calories: Math.max(0, context.totalMacros.calories - context.consumedMacros.calories),
+      protein: Math.max(0, context.totalMacros.protein - context.consumedMacros.protein),
+      carbs: Math.max(0, context.totalMacros.carbs - context.consumedMacros.carbs),
+      fat: Math.max(0, context.totalMacros.fat - context.consumedMacros.fat),
+    };
 
-      const consumedPercentages = {
-        calories: Math.round((context.consumedMacros.calories / context.totalMacros.calories) * 100),
-        protein: Math.round((context.consumedMacros.protein / context.totalMacros.protein) * 100),
-        carbs: Math.round((context.consumedMacros.carbs / context.totalMacros.carbs) * 100),
-        fat: Math.round((context.consumedMacros.fat / context.totalMacros.fat) * 100),
-      };
+    const consumedPercentages = {
+      calories: Math.round((context.consumedMacros.calories / context.totalMacros.calories) * 100),
+      protein: Math.round((context.consumedMacros.protein / context.totalMacros.protein) * 100),
+      carbs: Math.round((context.consumedMacros.carbs / context.totalMacros.carbs) * 100),
+      fat: Math.round((context.consumedMacros.fat / context.totalMacros.fat) * 100),
+    };
 
-      textAnalysisPrompt += `
+    textAnalysisPrompt += `
 
 ## Personal Nutrition Context
 **User**: ${context.userInfo}
@@ -625,8 +502,365 @@ You're a personal nutrition coach helping someone track their food. They've told
 4. **Calculate complete meal totals** including your suggestions
 
 Be helpful, specific, and focused on their success!`;
-    }
+  }
 
+  return textAnalysisPrompt;
+};
+
+/**
+ * Enhanced JSON parsing with comprehensive retry mechanism
+ */
+const parseFoodAnalysisResponseWithRetry = async (
+  response: string,
+  hasContext: boolean,
+  maxRetries: number = 3,
+  groqClient: Groq,
+  analysisPrompt: string,
+  base64Image?: string,
+  isTextAnalysis: boolean = false,
+  foodName?: string,
+  quantity?: string
+): Promise<FoodAnalysis> => {
+  
+  const fixAndParseJson = (jsonStr: string): any => {
+    // Apply math expression fixes
+    let fixed = fixMacrosInJsonString(jsonStr);
+    // Apply JSON repair
+    fixed = repairJsonString(fixed);
+    
+    const jsonMatch = fixed.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error("No valid JSON structure found");
+    }
+    
+    return JSON.parse(jsonMatch[0]);
+  };
+
+  // Try to parse the current response first
+  for (let parseAttempt = 0; parseAttempt < maxRetries; parseAttempt++) {
+    try {
+      console.log(`Parse attempt ${parseAttempt + 1}/${maxRetries}`);
+      const parsed = fixAndParseJson(response);
+      
+      // Validate required structure
+      if (!parsed.foodItems || !Array.isArray(parsed.foodItems)) {
+        throw new Error("Invalid foodItems format");
+      }
+      
+      if (!parsed.totalMacros || typeof parsed.totalMacros !== 'object') {
+        throw new Error("Invalid totalMacros format");
+      }
+
+      // Successfully parsed - build result
+      const result: FoodAnalysis = {
+        foodItems: parsed.foodItems.map((item: any) => ({
+          name: item.name || "Unknown food",
+          quantity: item.quantity || "Unknown quantity",
+          macros: {
+            calories: sanitizeNumericValue(item.macros?.calories || 0),
+            protein: sanitizeNumericValue(item.macros?.protein || 0),
+            carbs: sanitizeNumericValue(item.macros?.carbs || 0),
+            fat: sanitizeNumericValue(item.macros?.fat || 0)
+          }
+        })),
+        totalMacros: {
+          calories: sanitizeNumericValue(parsed.totalMacros.calories || 0),
+          protein: sanitizeNumericValue(parsed.totalMacros.protein || 0),
+          carbs: sanitizeNumericValue(parsed.totalMacros.carbs || 0),
+          fat: sanitizeNumericValue(parsed.totalMacros.fat || 0)
+        }
+      };
+
+      // Add suggestion if context provided
+      if (hasContext && parsed.suggestion) {
+        result.suggestion = {
+          shouldEat: Boolean(parsed.suggestion.shouldEat),
+          reason: parsed.suggestion.reason || "No specific advice provided",
+          recommendedQuantity: parsed.suggestion.recommendedQuantity,
+          alternatives: Array.isArray(parsed.suggestion.alternatives) 
+            ? parsed.suggestion.alternatives 
+            : []
+        };
+
+        if (parsed.suggestion.complementaryFoods && Array.isArray(parsed.suggestion.complementaryFoods)) {
+          result.suggestion.mealCompletionSuggestions = parsed.suggestion.complementaryFoods.map((food: any) => ({
+            name: food.name || "Unknown food",
+            quantity: food.quantity || "Unknown quantity",
+            macros: {
+              calories: sanitizeNumericValue(food.macros?.calories || 0),
+              protein: sanitizeNumericValue(food.macros?.protein || 0),
+              carbs: sanitizeNumericValue(food.macros?.carbs || 0),
+              fat: sanitizeNumericValue(food.macros?.fat || 0)
+            },
+            reason: food.reason || "Complements your meal"
+          }));
+        }
+
+        if (parsed.suggestion.completeMealMacros) {
+          result.suggestion.completeMealMacros = {
+            calories: sanitizeNumericValue(parsed.suggestion.completeMealMacros.calories || 0),
+            protein: sanitizeNumericValue(parsed.suggestion.completeMealMacros.protein || 0),
+            carbs: sanitizeNumericValue(parsed.suggestion.completeMealMacros.carbs || 0),
+            fat: sanitizeNumericValue(parsed.suggestion.completeMealMacros.fat || 0)
+          };
+        }
+      }
+
+      console.log(`Parse attempt ${parseAttempt + 1} successful!`);
+      return result;
+      
+    } catch (parseError) {
+      console.warn(`Parse attempt ${parseAttempt + 1} failed:`, parseError);
+      
+      // If this was the last parse attempt, try to get a new response from Groq
+      if (parseAttempt === maxRetries - 1) {
+        break;
+      }
+      
+      // Try basic string repairs for next attempt
+      response = repairJsonString(response);
+    }
+  }
+
+  // If parsing failed, retry with new Groq calls
+  for (let retryAttempt = 0; retryAttempt < maxRetries; retryAttempt++) {
+    try {
+      console.log(`Groq retry attempt ${retryAttempt + 1}/${maxRetries}`);
+      
+      const retryPrompt = analysisPrompt + `
+
+**IMPORTANT**: The previous response had JSON formatting issues. Please ensure your response:
+1. Contains ONLY valid JSON with no text before or after
+2. Uses calculated numbers, never mathematical expressions like "1+2" 
+3. All macro values must be plain numbers (e.g., 3.04, not 1.01+2.03)
+4. No trailing commas in objects or arrays
+5. All keys are properly quoted
+6. Return only the JSON object, nothing else
+
+CRITICAL: Calculate all mathematical expressions before including them in the JSON.`;
+
+      let completion;
+      if (isTextAnalysis && foodName && quantity) {
+        // Text-based retry
+        completion = await groqClient.chat.completions.create({
+          model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+          messages: [
+            {
+              role: "user",
+              content: `${retryPrompt}
+
+**Food**: ${foodName}
+**Quantity**: ${quantity}`,
+            },
+          ],
+          temperature: 0.1, // Lower temperature for more consistent output
+          max_tokens: 3000,
+        });
+      } else {
+        // Image-based retry
+        if (!base64Image) {
+          throw new Error("Base64 image required for image analysis retry");
+        }
+        
+        completion = await groqClient.chat.completions.create({
+          model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: retryPrompt,
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: base64Image,
+                  },
+                },
+              ],
+            },
+          ],
+          temperature: 0.1,
+          max_tokens: 3000,
+        });
+      }
+
+      const newResponse = completion.choices[0]?.message?.content || "";
+      console.log(`Retry ${retryAttempt + 1} response received, attempting to parse...`);
+      
+      // Try to parse the new response
+      const parsed = fixAndParseJson(newResponse);
+      
+      // Validate and build result (same validation logic as above)
+      if (!parsed.foodItems || !Array.isArray(parsed.foodItems)) {
+        throw new Error("Invalid foodItems format in retry response");
+      }
+      
+      if (!parsed.totalMacros || typeof parsed.totalMacros !== 'object') {
+        throw new Error("Invalid totalMacros format in retry response");
+      }
+
+      // Build successful result
+      const result: FoodAnalysis = {
+        foodItems: parsed.foodItems.map((item: any) => ({
+          name: item.name || "Unknown food",
+          quantity: item.quantity || "Unknown quantity",
+          macros: {
+            calories: sanitizeNumericValue(item.macros?.calories || 0),
+            protein: sanitizeNumericValue(item.macros?.protein || 0),
+            carbs: sanitizeNumericValue(item.macros?.carbs || 0),
+            fat: sanitizeNumericValue(item.macros?.fat || 0)
+          }
+        })),
+        totalMacros: {
+          calories: sanitizeNumericValue(parsed.totalMacros.calories || 0),
+          protein: sanitizeNumericValue(parsed.totalMacros.protein || 0),
+          carbs: sanitizeNumericValue(parsed.totalMacros.carbs || 0),
+          fat: sanitizeNumericValue(parsed.totalMacros.fat || 0)
+        }
+      };
+
+      // Add suggestions if context provided (same logic as above)
+      if (hasContext && parsed.suggestion) {
+        result.suggestion = {
+          shouldEat: Boolean(parsed.suggestion.shouldEat),
+          reason: parsed.suggestion.reason || "No specific advice provided",
+          recommendedQuantity: parsed.suggestion.recommendedQuantity,
+          alternatives: Array.isArray(parsed.suggestion.alternatives) 
+            ? parsed.suggestion.alternatives 
+            : []
+        };
+
+        if (parsed.suggestion.complementaryFoods && Array.isArray(parsed.suggestion.complementaryFoods)) {
+          result.suggestion.mealCompletionSuggestions = parsed.suggestion.complementaryFoods.map((food: any) => ({
+            name: food.name || "Unknown food",
+            quantity: food.quantity || "Unknown quantity",
+            macros: {
+              calories: sanitizeNumericValue(food.macros?.calories || 0),
+              protein: sanitizeNumericValue(food.macros?.protein || 0),
+              carbs: sanitizeNumericValue(food.macros?.carbs || 0),
+              fat: sanitizeNumericValue(food.macros?.fat || 0)
+            },
+            reason: food.reason || "Complements your meal"
+          }));
+        }
+
+        if (parsed.suggestion.completeMealMacros) {
+          result.suggestion.completeMealMacros = {
+            calories: sanitizeNumericValue(parsed.suggestion.completeMealMacros.calories || 0),
+            protein: sanitizeNumericValue(parsed.suggestion.completeMealMacros.protein || 0),
+            carbs: sanitizeNumericValue(parsed.suggestion.completeMealMacros.carbs || 0),
+            fat: sanitizeNumericValue(parsed.suggestion.completeMealMacros.fat || 0)
+          };
+        }
+      }
+
+      console.log(`Retry ${retryAttempt + 1} successful!`);
+      return result;
+      
+    } catch (retryError) {
+      console.error(`Retry attempt ${retryAttempt + 1} failed:`, retryError);
+      
+      // If this was the last retry, fall through to fallback
+      if (retryAttempt === maxRetries - 1) {
+        console.error('All retry attempts failed, returning fallback response');
+        break;
+      }
+      
+      // Wait a bit before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  // Fallback response if all retries failed
+  console.error("All parsing and retry attempts failed, returning fallback");
+  return {
+    foodItems: [
+      {
+        name: "Analysis failed",
+        quantity: "Unknown",
+        macros: { calories: 0, protein: 0, carbs: 0, fat: 0 }
+      }
+    ],
+    totalMacros: { calories: 0, protein: 0, carbs: 0, fat: 0 },
+    suggestion: hasContext ? {
+      shouldEat: false,
+      reason: "I couldn't analyze this properly after multiple attempts. Could you try uploading a clearer image or entering the food details manually?",
+      alternatives: ["Try uploading a clearer image", "Enter the food details manually", "Contact support if this issue persists"]
+    } : undefined
+  };
+};
+
+/**
+ * Main food analysis function using Groq SDK with enhanced retry logic
+ */
+export const analyzeFoodFromImage = async (
+  imageUrl: string,
+  context?: FoodAnalysisContext
+): Promise<FoodAnalysis> => {
+  try {
+    const groq = createGroqClient();
+    const analysisPrompt = createFoodAnalysisPrompt(context);
+    
+    console.log('Converting image to base64 for analysis...');
+    const base64Image = await urlToBase64(imageUrl);
+    console.log('Base64 conversion successful, proceeding with analysis...');
+
+    const completion = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: analysisPrompt,
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: base64Image,
+              },
+            },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 3000,
+    });
+
+    const response = completion.choices[0]?.message?.content || "";
+    console.log('Analysis complete, parsing response with retry logic...');
+    
+    return await parseFoodAnalysisResponseWithRetry(
+      response,
+      !!context,
+      3, // maxRetries
+      groq,
+      analysisPrompt,
+      base64Image,
+      false // isTextAnalysis
+    );
+    
+  } catch (error: any) {
+    console.error('Food analysis failed:', error);
+    throw new Error(`Food analysis failed: ${error.message}`);
+  }
+};
+
+/**
+ * Enhanced text-based food analysis with conversational recommendations and retry logic
+ */
+export const analyzeFoodFromText = async (
+  foodName: string,
+  quantity: string,
+  context?: FoodAnalysisContext
+): Promise<FoodAnalysis> => {
+  try {
+    const groq = createGroqClient();
+    const textAnalysisPrompt = createTextFoodAnalysisPrompt(foodName, quantity, context);
+    
     console.log('Analyzing text input:', { foodName, quantity });
 
     const completion = await groq.chat.completions.create({
@@ -642,9 +876,19 @@ Be helpful, specific, and focused on their success!`;
     });
 
     const response = completion.choices[0]?.message?.content || "";
-    console.log('Text analysis complete, parsing response...');
+    console.log('Text analysis complete, parsing response with retry logic...');
     
-    return parseFoodAnalysisResponse(response, !!context);
+    return await parseFoodAnalysisResponseWithRetry(
+      response,
+      !!context,
+      3, // maxRetries
+      groq,
+      textAnalysisPrompt,
+      undefined, // no base64Image for text analysis
+      true, // isTextAnalysis
+      foodName,
+      quantity
+    );
     
   } catch (error: any) {
     console.error('Text food analysis failed:', error);
@@ -684,13 +928,13 @@ export const validateFoodTextInput = (foodName: string, quantity: string): { isV
   return { isValid: true };
 };
 
-
 /**
- * Suggest daily macronutrients using Groq SDK based on user details string and age
+ * Suggest daily macronutrients using Groq SDK based on user details string and age with retry logic
  */
 export const suggestMacrosWithGroq = async (
   userDetailsString: string,
-  age: number
+  age: number,
+  maxRetries: number = 3
 ): Promise<{
   calories: number;
   protein: number;
@@ -698,10 +942,9 @@ export const suggestMacrosWithGroq = async (
   fat: number;
   explanation?: string;
 }> => {
-  try {
-    const groq = createGroqClient();
+  const groq = createGroqClient();
 
-    const macroPrompt = `
+  const macroPrompt = `
 You're a professional nutritionist AI using USDA standards and evidence-based guidelines. 
 
 User Details: ${userDetailsString}
@@ -754,49 +997,63 @@ Based on the provided information, calculate personalized daily macronutrient ta
 - ALL macro values must be final calculated numbers (no expressions like "100+50")
 - Be realistic with portion recommendations
 - Consider user's lifestyle and preferences mentioned in details string
+- No trailing commas in JSON
 
 Provide accurate, science-based recommendations that the user can realistically follow.`;
 
-    console.log('Requesting macro suggestions from Groq...');
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      console.log(`Macro suggestion attempt ${attempt + 1}/${maxRetries}`);
 
-    const completion = await groq.chat.completions.create({
-      model: "meta-llama/llama-4-maverick-17b-128e-instruct",
-      messages: [
-        {
-          role: "user",
-          content: macroPrompt,
-        },
-      ],
-      temperature: 0.1, // Low temperature for consistent, accurate calculations
-      max_tokens: 1000,
-    });
+      const completion = await groq.chat.completions.create({
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        messages: [
+          {
+            role: "user",
+            content: macroPrompt,
+          },
+        ],
+        temperature: 0.1, // Low temperature for consistent, accurate calculations
+        max_tokens: 1000,
+      });
 
-    const response = completion.choices[0]?.message?.content || "";
-    console.log('Groq macro response:', response);
-    
-    // Fix any mathematical expressions before parsing
-    const fixedResponse = fixMacrosInJsonString(response);
-    
-    // Extract JSON from response
-    const jsonMatch = fixedResponse.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+      const response = completion.choices[0]?.message?.content || "";
+      console.log('Groq macro response:', response);
       
-      return {
-        calories: sanitizeNumericValue(parsed.calories || 2000),
-        protein: sanitizeNumericValue(parsed.protein || 150),
-        carbs: sanitizeNumericValue(parsed.carbs || 250),
-        fat: sanitizeNumericValue(parsed.fat || 60),
-        explanation: parsed.explanation || "Macro suggestions based on your profile"
-      };
+      // Fix any mathematical expressions before parsing
+      const fixedResponse = fixMacrosInJsonString(response);
+      const repairedResponse = repairJsonString(fixedResponse);
+      
+      // Extract JSON from response
+      const jsonMatch = repairedResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        
+        return {
+          calories: sanitizeNumericValue(parsed.calories || 2000),
+          protein: sanitizeNumericValue(parsed.protein || 150),
+          carbs: sanitizeNumericValue(parsed.carbs || 250),
+          fat: sanitizeNumericValue(parsed.fat || 60),
+          explanation: parsed.explanation || "Macro suggestions based on your profile"
+        };
+      }
+      
+      throw new Error("Unable to parse macro suggestions from response");
+      
+    } catch (error: any) {
+      console.error(`Macro suggestion attempt ${attempt + 1} failed:`, error);
+      
+      if (attempt === maxRetries - 1) {
+        throw new Error(`Failed to get macro suggestions after ${maxRetries} attempts: ${error.message}`);
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    
-    throw new Error("Unable to parse macro suggestions from response");
-    
-  } catch (error: any) {
-    console.error('Macro suggestion error:', error);
-    throw new Error(`Failed to get macro suggestions: ${error.message}`);
   }
+
+  // This shouldn't be reached, but TypeScript needs it
+  throw new Error(`Failed to get macro suggestions after ${maxRetries} attempts`);
 };
 
 /**
