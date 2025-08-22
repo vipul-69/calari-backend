@@ -4,7 +4,7 @@ async function verifyPayment() {
   const response = await fetch(`https://checkout.dodopayments.com/payments/pdt_7or034UBldrgQUgpszH3d`, {
     method: "GET",
     headers: {
-      Authorization: `Bearer gqsfkrQRiXK5qhJ2.VGh7T50ESKPL7ydqLxqLS4bIjogrQRNGrZbrclRAkadbR30O`,
+      Authorization: `Bearer SfU-Bh7r7KCeB898.ccvQedY8lOLfyv1WiCBVVLwSczf9flR5IxxQwl6-mKE-OK_E`,
       "Content-Type": "application/json"
     }
   });
