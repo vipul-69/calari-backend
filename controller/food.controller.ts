@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { validateFoodImage, analyzeFoodFromImage, analyzeFoodFromText, validateFoodTextInput } from '../services/food.service';
-import { suggestMacrosWithGroq, validateUserDetailsString } from '../services/food.service';
+import { suggestMacrosWithGroq } from '../services/food.service';
 
 interface FoodAnalysisRequest {
   imageUrl: string;
@@ -208,7 +208,6 @@ export const analyzeFoodText = async (req: Request, res: Response): Promise<void
       responseData.hasRecommendation = false;
       responseData.hasComplementaryFoods = false;
     }
-    console.log(responseData)
     res.json(responseData);
 
   } catch (error: any) {
@@ -272,7 +271,6 @@ export const suggestMacros = async (req: Request, res: Response): Promise<void> 
 
   try {
     const { userDetails, age } = req.body;
-    console.log(userDetails, age)
     // Validate required fields
     if (!userDetails || age === undefined || age === null) {
       res.status(400).json({ 
@@ -321,12 +319,7 @@ export const suggestMacros = async (req: Request, res: Response): Promise<void> 
       }
     };
 
-    console.log('Macro suggestion successful:', {
-      age,
-      detailsLength: userDetails.length,
-      duration: analysisDuration,
-      calories: macroSuggestions.calories
-    });
+     
 
     res.json(responseData);
 

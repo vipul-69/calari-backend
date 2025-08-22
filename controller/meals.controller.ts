@@ -525,7 +525,6 @@ export const getNutritionAnalytics = async (req: AuthenticatedRequest, res: Resp
 export const getMealCount = async(req:AuthenticatedRequest, res:Response)=>{
     try{
         const userId = req.user.id
-        console.log(userId)
         const query = `
         SELECT meals_scanned 
             FROM daily_meals
@@ -533,7 +532,6 @@ export const getMealCount = async(req:AuthenticatedRequest, res:Response)=>{
         `
 
         const result = await pool.query(query,[userId])
-        console.log(result.rows[0])
         res.status(200).json({
             success:true,
             data: result.rows[0].meals_scanned

@@ -169,7 +169,6 @@ Be helpful but accurate - I'm counting on you to identify real food items correc
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      console.log(`Food validation attempt ${attempt + 1}/${maxRetries}`);
       
       // Convert URL to base64
       const base64Image = await urlToBase64(imageUrl);
@@ -199,7 +198,6 @@ Be helpful but accurate - I'm counting on you to identify real food items correc
       });
 
       const response = completion.choices[0]?.message?.content || "";
-      console.log('Groq validation response:', response);
       
       // Fix any mathematical expressions and repair JSON
       const fixedResponse = fixMacrosInJsonString(response);
@@ -539,7 +537,6 @@ const parseFoodAnalysisResponseWithRetry = async (
   // Try to parse the current response first
   for (let parseAttempt = 0; parseAttempt < maxRetries; parseAttempt++) {
     try {
-      console.log(`Parse attempt ${parseAttempt + 1}/${maxRetries}`);
       const parsed = fixAndParseJson(response);
       
       // Validate required structure
@@ -606,7 +603,6 @@ const parseFoodAnalysisResponseWithRetry = async (
         }
       }
 
-      console.log(`Parse attempt ${parseAttempt + 1} successful!`);
       return result;
       
     } catch (parseError) {
@@ -625,7 +621,6 @@ const parseFoodAnalysisResponseWithRetry = async (
   // If parsing failed, retry with new Groq calls
   for (let retryAttempt = 0; retryAttempt < maxRetries; retryAttempt++) {
     try {
-      console.log(`Groq retry attempt ${retryAttempt + 1}/${maxRetries}`);
       
       const retryPrompt = analysisPrompt + `
 
@@ -687,7 +682,6 @@ CRITICAL: Calculate all mathematical expressions before including them in the JS
       }
 
       const newResponse = completion.choices[0]?.message?.content || "";
-      console.log(`Retry ${retryAttempt + 1} response received, attempting to parse...`);
       
       // Try to parse the new response
       const parsed = fixAndParseJson(newResponse);
@@ -756,7 +750,6 @@ CRITICAL: Calculate all mathematical expressions before including them in the JS
         }
       }
 
-      console.log(`Retry ${retryAttempt + 1} successful!`);
       return result;
       
     } catch (retryError) {
@@ -803,9 +796,7 @@ export const analyzeFoodFromImage = async (
     const groq = createGroqClient();
     const analysisPrompt = createFoodAnalysisPrompt(context);
     
-    console.log('Converting image to base64 for analysis...');
     const base64Image = await urlToBase64(imageUrl);
-    console.log('Base64 conversion successful, proceeding with analysis...');
 
     const completion = await groq.chat.completions.create({
       model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -831,7 +822,6 @@ export const analyzeFoodFromImage = async (
     });
 
     const response = completion.choices[0]?.message?.content || "";
-    console.log('Analysis complete, parsing response with retry logic...');
     
     return await parseFoodAnalysisResponseWithRetry(
       response,
@@ -861,7 +851,6 @@ export const analyzeFoodFromText = async (
     const groq = createGroqClient();
     const textAnalysisPrompt = createTextFoodAnalysisPrompt(foodName, quantity, context);
     
-    console.log('Analyzing text input:', { foodName, quantity });
 
     const completion = await groq.chat.completions.create({
       model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -876,7 +865,6 @@ export const analyzeFoodFromText = async (
     });
 
     const response = completion.choices[0]?.message?.content || "";
-    console.log('Text analysis complete, parsing response with retry logic...');
     
     return await parseFoodAnalysisResponseWithRetry(
       response,
@@ -1003,7 +991,6 @@ Provide accurate, science-based recommendations that the user can realistically 
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      console.log(`Macro suggestion attempt ${attempt + 1}/${maxRetries}`);
 
       const completion = await groq.chat.completions.create({
         model: "meta-llama/llama-4-maverick-17b-128e-instruct",
@@ -1018,7 +1005,6 @@ Provide accurate, science-based recommendations that the user can realistically 
       });
 
       const response = completion.choices[0]?.message?.content || "";
-      console.log('Groq macro response:', response);
       
       // Fix any mathematical expressions before parsing
       const fixedResponse = fixMacrosInJsonString(response);

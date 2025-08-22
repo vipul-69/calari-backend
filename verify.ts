@@ -1,7 +1,7 @@
 const fetch = require("node-fetch");
 
 async function verifyPayment() {
-  const response = await fetch(`https://test.dodopayments.com/payments/pay_JHnjbi0WdDXvbuXD26kR2`, {
+  const response = await fetch(`https://checkout.dodopayments.com/payments/pdt_7or034UBldrgQUgpszH3d`, {
     method: "GET",
     headers: {
       Authorization: `Bearer gqsfkrQRiXK5qhJ2.VGh7T50ESKPL7ydqLxqLS4bIjogrQRNGrZbrclRAkadbR30O`,
@@ -14,7 +14,6 @@ async function verifyPayment() {
   }
 
   const data = await response.json();
-  console.log(data); // Contains payment details
   return data.status === "succeeded";
 }
 
