@@ -14,7 +14,7 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
 
   try {
     // 1. Verify payment with Dodo
-    const response = await fetch(`https://test.dodopayments.com/payments/${paymentId}`, {
+    const response = await fetch(`https://checkout.dodopayments.com/payments/${paymentId}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
