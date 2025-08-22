@@ -14,7 +14,7 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
 
   try {
     // 1. Verify payment with Dodo
-    const response = await fetch(`https://checkout.dodopayments.com/payments/${paymentId}`, {
+    const response = await fetch(`https://live.dodopayments.com/payments/${paymentId}`, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
@@ -29,12 +29,26 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
     const data = await response.json();
     const success = data.status === "succeeded";
 
+    // 2. Verify that the payment time is within last 5 minutes
+    if (success) {
+      const paymentTime = new Date(data.created_at).getTime();
+      const now = Date.now();
+      const diffMs = now - paymentTime;
+      const fiveMinutesMs = 5 * 60 * 1000;
+
+      if (diffMs > fiveMinutesMs) {
+        return res.status(400).json({ 
+          error: "Payment is older than 5 minutes and cannot be verified" 
+        });
+      }
+    }
+
     if (success) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
 
-        // 2a. Mark any previous active subscriptions as expired
+        // 3a. Expire previous active subscriptions
         await client.query(
           `
           UPDATE user_subscriptions
@@ -44,7 +58,7 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
           [userId]
         );
 
-        // 2b. Insert a new active subscription (30-day pro)
+        // 3b. Insert a new active subscription (30-day pro)
         await client.query(
           `
           INSERT INTO user_subscriptions (user_id, plan, start_date, end_date, status)
@@ -53,7 +67,7 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
           [userId]
         );
 
-        // 2c. Update the user's plan in the users table
+        // 3c. Update the user's plan in the users table
         await client.query(
           `
           UPDATE users
@@ -72,7 +86,7 @@ export const verifyPaymentController = async (req: Request, res: Response) => {
       }
     }
 
-    // 3. Send response back
+    // 4. Send response back
     return res.json({
       userId,
       paymentId,
