@@ -1099,3 +1099,159 @@ export const parseUserDetailsString = (userDetailsString: string): Record<string
   
   return details;
 };
+
+
+/**
+ * Extract food name and quantity from natural language prompt using Groq SDK with retry logic
+ */
+export const extractFoodNameQuantityFromPrompt = async (
+  prompt: string,
+  maxRetries: number = 3
+): Promise<{ name?: string; quantity?: string } | undefined> => {
+  try {
+    const groq = createGroqClient();
+
+    const extractionPrompt = `
+You're a food parsing assistant. Analyze the natural language prompt and extract the food name and quantity if present.
+
+## Your Task
+Parse the user's prompt to identify:
+1. The name of the food item
+2. The quantity/amount (if mentioned)
+
+## Response Format (Must be valid JSON)
+Return one of these formats:
+
+If both name and quantity are found:
+{
+  "name": "food name",
+  "quantity": "amount with units"
+}
+
+If only name is found:
+{
+  "name": "food name"
+}
+
+If prompt is too vague or no food is mentioned:
+{
+  "undefined": true
+}
+
+## Parsing Guidelines
+- Extract the main food item name (e.g., "chicken breast", "apple", "rice")
+- Include quantity with units when available (e.g., "2 slices", "150g", "1 cup")
+- Handle common quantity expressions (e.g., "half", "quarter", "a few")
+- Ignore non-food words like "eat", "have", "take", "some"
+- If multiple foods mentioned, focus on the primary one
+- Be flexible with natural language variations
+
+## Examples
+- "I'm eating 2 slices of bread" → {"name": "bread", "quantity": "2 slices"}
+- "Had some grilled chicken" → {"name": "grilled chicken"}
+- "150g salmon for lunch" → {"name": "salmon", "quantity": "150g"}
+- "Just water" → {"name": "water"}
+- "eat" → {"undefined": true}
+- "" → {"undefined": true}
+
+**CRITICAL REQUIREMENTS:**
+- Return ONLY valid JSON with no extra text
+- Use exact field names: "name", "quantity", "undefined"
+- All values must be strings (not numbers)
+- No trailing commas in JSON
+- If unsure, prefer returning {"undefined": true}
+
+User prompt: "${prompt}"`;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const completion = await groq.chat.completions.create({
+          model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+          messages: [
+            {
+              role: "user",
+              content: extractionPrompt,
+            },
+          ],
+          temperature: 0.1, // Low temperature for consistent parsing
+          max_tokens: 200,
+          response_format: { type: "json_object" }, // Ensure JSON response
+        });
+
+        const response = completion.choices[0]?.message?.content || "";
+        
+        // Parse the JSON response
+        const parsed = JSON.parse(response);
+        
+        // Handle undefined case
+        if (parsed.undefined === true) {
+          return undefined;
+        }
+        
+        // Validate required name field
+        if (!parsed.name || typeof parsed.name !== 'string') {
+          throw new Error("Invalid or missing name field");
+        }
+        
+        // Build result object
+        const result: { name: string; quantity?: string } = {
+          name: parsed.name.trim()
+        };
+        
+        // Add quantity if present and valid
+        if (parsed.quantity && typeof parsed.quantity === 'string' && parsed.quantity.trim().length > 0) {
+          result.quantity = parsed.quantity.trim();
+        }
+        
+        return result;
+        
+      } catch (error: any) {
+        console.error(`Food extraction attempt ${attempt + 1} failed:`, error);
+        
+        if (attempt === maxRetries - 1) {
+          console.error('All extraction attempts failed, returning undefined');
+          return undefined;
+        }
+        
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    
+    return undefined;
+    
+  } catch (error: any) {
+    console.error('Food name/quantity extraction failed:', error);
+    return undefined;
+  }
+};
+
+/**
+ * Validate natural language food prompt
+ */
+export const validateFoodPrompt = (prompt: string): { isValid: boolean; error?: string } => {
+  if (!prompt || typeof prompt !== 'string') {
+    return { isValid: false, error: "Prompt must be a non-empty string" };
+  }
+  
+  const trimmed = prompt.trim();
+  
+  if (trimmed.length === 0) {
+    return { isValid: false, error: "Prompt cannot be empty" };
+  }
+  
+  if (trimmed.length < 2) {
+    return { isValid: false, error: "Prompt too short - needs at least 2 characters" };
+  }
+  
+  // Check for potentially problematic inputs
+  if (/^\d+$/.test(trimmed)) {
+    return { isValid: false, error: "Prompt cannot be only numbers" };
+  }
+  
+  if (!/[a-zA-Z]/.test(trimmed)) {
+    return { isValid: false, error: "Prompt must contain at least one letter" };
+  }
+  
+  return { isValid: true };
+};

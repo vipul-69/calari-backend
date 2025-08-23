@@ -391,3 +391,65 @@ export const suggestMacros = async (req: Request, res: Response): Promise<void> 
   }
 };
 
+// controllers/foodExtract.controller.ts
+import { extractFoodNameQuantityFromPrompt } from '../services/food.service';
+
+/**
+ * Controller to extract food name and quantity from a natural language prompt
+ */
+export const extractFoodFromPrompt = async (req: Request, res: Response): Promise<void> => {
+  if (req.method !== 'POST') {
+    res.status(405).json({ 
+      success: false,
+      error: 'Method not allowed',
+      details: 'Only POST requests are supported'
+    });
+    return;
+  }
+
+  try {
+    const { prompt } = req.body;
+
+    if (!prompt || typeof prompt !== 'string' || prompt.trim().length === 0) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing or invalid prompt',
+        details: 'A valid non-empty prompt string is required'
+      });
+      return;
+    }
+
+    const extraction = await extractFoodNameQuantityFromPrompt(prompt);
+    if (!extraction || (typeof extraction !== 'object' && extraction !== undefined)) {
+      res.status(422).json({
+        success: false,
+        error: 'Could not extract food name from prompt',
+        input: prompt
+      });
+      return;
+    }
+
+    if (extraction === undefined) {
+      res.status(200).json({
+        success: true,
+        extracted: null,
+        message: 'Food name could not be confidently extracted from prompt',
+        input: prompt
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      extracted: extraction,
+      input: prompt
+    });
+
+  } catch (error: any) {
+    res.status(500).json({ 
+      success: false,
+      error: 'Extraction failed', 
+      details: error.message || 'Unknown server error'
+    });
+  }
+};

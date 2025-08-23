@@ -159,3 +159,47 @@ export const getUser = async (req: Request, res: Response) => {
     return handleDatabaseError(error, res)
   }
 }
+
+
+// Get user subscriptions
+export const getUserSubscriptions = async (req: Request, res: Response) => {
+  try {
+    const { userId } = getAuth(req) // Get Clerk user ID
+    
+    if (!userId) {
+      return res.status(401).json({ error: "Authentication required" })
+    }
+
+    // First get the internal user id from users table using clerk_id
+    const getUserQuery = `
+      SELECT id FROM users WHERE clerk_id = $1
+    `
+
+    const userResult = await pool.query(getUserQuery, [userId])
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" })
+    }
+
+    const userDbId = userResult.rows[0].id
+    
+    // Get all subscriptions for the user
+    const getSubscriptionsQuery = `
+    SELECT id, user_id, plan, start_date, end_date, status, created_at
+    FROM user_subscriptions
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `
+    
+    const subscriptionsResult = await pool.query(getSubscriptionsQuery, [userDbId])
+    console.log(subscriptionsResult.rows)
+
+    return res.status(200).json({ 
+      subscriptions: subscriptionsResult.rows 
+    })
+
+    
+  } catch (error: any) {
+    return handleDatabaseError(error, res)
+  }
+}
