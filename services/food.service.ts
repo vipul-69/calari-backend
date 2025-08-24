@@ -133,76 +133,84 @@ const sanitizeNumericValue = (value: any): number => {
 /**
  * Detect if image contains a nutrition label and extract information
  */
+/**
+ * Enhanced nutrition label detection with improved accuracy
+ */
 export const detectAndAnalyzeNutritionLabel = async (
   imageUrl: string,
   maxRetries: number = 3
 ): Promise<{ isNutritionLabel: boolean; analysis?: any; reason: string }> => {
   const groq = createGroqClient();
   
-  const labelDetectionPrompt = `
-You're a nutrition label reading assistant. Analyze this image to determine if it contains a nutrition facts label or nutritional information panel.
+  const enhancedLabelDetectionPrompt = `
+You are an expert nutrition label reader. Your ONLY job is to detect if this image contains a nutrition facts label/panel and extract ALL visible nutritional information with extreme precision.
 
-## Your Task
-1. Check if the image shows a nutrition facts label, nutrition information panel, or food packaging with nutritional data
-2. If it's a nutrition label, extract all the nutritional information you can see
-3. If it's not a nutrition label, identify what type of image it is
+## DETECTION CRITERIA
+Look for these specific indicators of nutrition labels:
+✓ "Nutrition Facts" heading (US format)
+✓ "Nutrition Information" heading (International)
+✓ "Supplement Facts" heading
+✓ Structured table with serving size information
+✓ Calories listed prominently
+✓ List of nutrients (protein, carbs, fat, etc.)
+✓ Percentage Daily Values (%DV or % Daily Value)
+✓ Serving size information (per serving, per 100g, etc.)
 
-## Response Format (Must be valid JSON)
+## EXTRACTION RULES
+- Read EVERY visible number and nutrient name carefully
+- If serving size shows "1 pretzel (28g)" - extract both the description AND weight
+- For "% Daily Value" - ignore these percentages, focus on actual gram/mg amounts
+- If you see ranges like "2-3g", use the first number (2g)
+- Convert all measurements to standard units when possible
+- If text is partially obscured, extract what you CAN read clearly
+- DO NOT guess or estimate values you cannot see clearly
+
+## RESPONSE FORMAT
 If it's a nutrition label:
 {
   "isNutritionLabel": true,
-  "servingSize": "serving size text",
-  "servingsPerContainer": "number or text",
+  "productName": "name if visible on label",
+  "servingSize": "exact text from label (e.g., '3 pretzels (28g)')",
+  "servingsPerContainer": "number or text from label",
   "nutritionalInfo": {
-    "calories": number,
-    "protein": number,
-    "totalCarbs": number,
-    "fat": number,
-    "fiber": number,
-    "sugar": number,
-    "sodium": number
+    "calories": actual_number_per_serving,
+    "protein": grams_per_serving,
+    "totalCarbs": grams_per_serving,
+    "fat": grams_per_serving,
+    "saturatedFat": grams_per_serving,
+    "transFat": grams_per_serving,
+    "cholesterol": milligrams_per_serving,
+    "sodium": milligrams_per_serving,
+    "fiber": grams_per_serving,
+    "sugar": grams_per_serving,
+    "addedSugar": grams_per_serving,
+    "vitaminD": micrograms_or_IU,
+    "calcium": milligrams_per_serving,
+    "iron": milligrams_per_serving,
+    "potassium": milligrams_per_serving
   },
-  "reason": "what type of nutrition label you found"
+  "reason": "Detected [type] nutrition label with [specific details you found]"
 }
 
-If it's NOT a nutrition label:
+If NOT a nutrition label:
 {
   "isNutritionLabel": false,
-  "reason": "description of what you see instead"
+  "reason": "This image shows [what you actually see] - no structured nutrition information visible"
 }
 
-## What Counts as Nutrition Label
-✓ Official "Nutrition Facts" panels (US format)
-✓ European nutrition information panels
-✓ Product packaging showing calories, protein, carbs, fat
-✓ Restaurant menu nutritional information
-✓ Supplement facts panels
-✓ Any structured nutritional data display
-
-## What Doesn't Count
-✗ Regular food items without packaging
-✗ Recipes or cooking instructions
-✗ General food photography
-✗ Empty packages without visible nutrition info
-
-## Extraction Guidelines
-- Read all visible nutritional values carefully
-- Convert serving sizes to standard units when possible
-- Extract per-serving values (not per 100g unless that's the serving)
+## CRITICAL REQUIREMENTS
 - Use 0 for any nutrients not visible or listed
-- **ALL nutritional values must be final calculated numbers (no expressions)**
-- If values show ranges (like "2-3g"), use the average
+- ALL values must be numbers, never text or expressions
+- Read serving size information very carefully
+- Focus on per-serving values, not per-100g unless that's the only option
+- Be extremely accurate with numbers you can see
+- If multiple serving sizes listed, use the primary one
+- Extract the exact serving description (e.g., "1 cup", "2 tbsp", "1 pretzel")
 
-**CRITICAL REQUIREMENTS:**
-- Return ONLY valid JSON with no extra text
-- All macro values must be plain numbers, never mathematical expressions
-- If you can't read a value clearly, use 0
-- Be accurate with the numbers you can see
-- No trailing commas in JSON objects`;
+REMEMBER: Your accuracy is crucial for dietary tracking. Only extract what you can clearly read.`;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      // Convert URL to base64
       const base64Image = await urlToBase64(imageUrl);
 
       const completion = await groq.chat.completions.create({
@@ -213,7 +221,7 @@ If it's NOT a nutrition label:
             content: [
               {
                 type: "text",
-                text: labelDetectionPrompt,
+                text: enhancedLabelDetectionPrompt,
               },
               {
                 type: "image_url",
@@ -224,19 +232,38 @@ If it's NOT a nutrition label:
             ],
           },
         ],
-        temperature: 0.1,
-        max_tokens: 1500,
+        temperature: 0.0, // Zero temperature for maximum consistency
+        max_tokens: 2000,
       });
 
       const response = completion.choices[0]?.message?.content || "";
       
-      // Fix any mathematical expressions and repair JSON
+      // Enhanced JSON extraction and validation
       const fixedResponse = fixMacrosInJsonString(response);
       const repairedResponse = repairJsonString(fixedResponse);
       
       const jsonMatch = repairedResponse.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
+        
+        // Validate nutrition label detection
+        if (parsed.isNutritionLabel === true) {
+          // Ensure we have meaningful nutritional data
+          const nutritionalInfo = parsed.nutritionalInfo || {};
+          const hasNutritionData = nutritionalInfo.calories > 0 || 
+                                   nutritionalInfo.protein > 0 || 
+                                   nutritionalInfo.totalCarbs > 0 || 
+                                   nutritionalInfo.fat > 0;
+          
+          if (!hasNutritionData) {
+            console.warn("Detected nutrition label but no meaningful nutritional data extracted");
+            return {
+              isNutritionLabel: false,
+              reason: "Label detected but nutritional values could not be read clearly"
+            };
+          }
+        }
+        
         return {
           isNutritionLabel: parsed.isNutritionLabel === true,
           analysis: parsed.isNutritionLabel ? parsed : undefined,
@@ -247,16 +274,17 @@ If it's NOT a nutrition label:
       throw new Error("No valid JSON found in response");
       
     } catch (error: any) {
-      console.error(`Nutrition label detection attempt ${attempt + 1} failed:`, error);
+      console.error(`Enhanced nutrition label detection attempt ${attempt + 1} failed:`, error);
       
       if (attempt === maxRetries - 1) {
         return {
           isNutritionLabel: false,
-          reason: `Error occurred during nutrition label detection: ${error.message}`
+          reason: `Error during nutrition label detection: ${error.message}`
         };
       }
       
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Exponential backoff for retries
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
     }
   }
 
@@ -267,7 +295,7 @@ If it's NOT a nutrition label:
 };
 
 /**
- * Convert nutrition label data to FoodAnalysis format
+ * Enhanced conversion function with better data handling
  */
 const convertNutritionLabelToFoodAnalysis = (
   labelData: any,
@@ -275,39 +303,32 @@ const convertNutritionLabelToFoodAnalysis = (
 ): FoodAnalysis => {
   const nutritionalInfo = labelData.nutritionalInfo || {};
   
-  // Extract food name from serving info or use generic name
+  // Create more descriptive food name
+  const productName = labelData.productName || "Product";
   const servingSize = labelData.servingSize || "1 serving";
-  const foodName = `Product (${servingSize})`;
+  const foodName = productName !== "Product" ? 
+    `${productName} (${servingSize})` : 
+    `Product (${servingSize})`;
   
-  // Build food analysis result
+  // Enhanced macro calculation with better fallbacks
+  const calories = sanitizeNumericValue(nutritionalInfo.calories || 0);
+  const protein = sanitizeNumericValue(nutritionalInfo.protein || 0);
+  const carbs = sanitizeNumericValue(nutritionalInfo.totalCarbs || 0);
+  const fat = sanitizeNumericValue(nutritionalInfo.fat || 0);
+  
   const result: FoodAnalysis = {
     foodItems: [
       {
         name: foodName,
         quantity: servingSize,
-        macros: {
-          calories: sanitizeNumericValue(nutritionalInfo.calories || 0),
-          protein: sanitizeNumericValue(nutritionalInfo.protein || 0),
-          carbs: sanitizeNumericValue(nutritionalInfo.totalCarbs || 0),
-          fat: sanitizeNumericValue(nutritionalInfo.fat || 0)
-        }
+        macros: { calories, protein, carbs, fat }
       }
     ],
-    totalMacros: {
-      calories: sanitizeNumericValue(nutritionalInfo.calories || 0),
-      protein: sanitizeNumericValue(nutritionalInfo.protein || 0),
-      carbs: sanitizeNumericValue(nutritionalInfo.totalCarbs || 0),
-      fat: sanitizeNumericValue(nutritionalInfo.fat || 0)
-    }
+    totalMacros: { calories, protein, carbs, fat }
   };
 
-  // Add contextual suggestions if context provided
+  // Enhanced contextual suggestions
   if (context) {
-    const calories = result.totalMacros.calories;
-    const protein = result.totalMacros.protein;
-    const carbs = result.totalMacros.carbs;
-    const fat = result.totalMacros.fat;
-    
     const remaining = {
       calories: Math.max(0, context.totalMacros.calories - context.consumedMacros.calories),
       protein: Math.max(0, context.totalMacros.protein - context.consumedMacros.protein),
@@ -315,44 +336,64 @@ const convertNutritionLabelToFoodAnalysis = (
       fat: Math.max(0, context.totalMacros.fat - context.consumedMacros.fat),
     };
 
-    // Simple logic to determine if it fits their goals
     const fitsCalories = calories <= remaining.calories;
-    const reasonablePortion = calories > 0; // Basic validation
+    const portionAdvice = fitsCalories ? 
+      "full serving" : 
+      `${Math.round((remaining.calories / calories) * 100)}% of the serving`;
     
     result.suggestion = {
-      shouldEat: fitsCalories && reasonablePortion,
+      shouldEat: fitsCalories && calories > 0,
       reason: fitsCalories 
-        ? `This fits well within your remaining ${remaining.calories} calories for today. The nutrition profile shows ${protein}g protein, ${carbs}g carbs, and ${fat}g fat per serving.`
-        : `This has ${calories} calories, which might push you over your remaining budget of ${remaining.calories} calories. Consider having a smaller portion or saving it for tomorrow.`,
-      recommendedQuantity: fitsCalories ? servingSize : `Half serving (${(calories/2).toFixed(0)} calories)`,
+        ? `Perfect! This ${servingSize} fits within your remaining ${remaining.calories} calories. It provides ${protein}g protein, ${carbs}g carbs, and ${fat}g fat.`
+        : `This serving has ${calories} calories, which exceeds your remaining ${remaining.calories} calories. Consider having ${portionAdvice} instead.`,
+      recommendedQuantity: portionAdvice,
       alternatives: fitsCalories ? [] : [
-        "Have half the serving size",
-        "Save for a day with more calories available",
-        "Pair with a lighter meal"
+        `Have ${portionAdvice} of the serving`,
+        "Save some for tomorrow",
+        "Pair with lighter foods today"
       ]
     };
 
-    // Add simple meal completion suggestions based on missing macros
-    if (remaining.protein > protein + 10) {
-      const proteinSuggestion = {
+    // Smart meal completion based on missing macros
+    const suggestions = [];
+    if (remaining.protein > protein + 15) {
+      suggestions.push({
         name: "Greek yogurt",
-        quantity: "1 cup (170g)",
-        macros: { calories: 130, protein: 20, carbs: 9, fat: 0 },
-        reason: "Adds protein to help you reach your daily target"
-      };
+        quantity: "1 cup",
+        macros: { calories: 100, protein: 17, carbs: 6, fat: 0 },
+        reason: "Boost protein to reach your daily target"
+      });
+    }
+    
+    if (remaining.carbs > carbs + 20 && remaining.calories > 150) {
+      suggestions.push({
+        name: "Brown rice",
+        quantity: "1/2 cup cooked",
+        macros: { calories: 110, protein: 3, carbs: 23, fat: 1 },
+        reason: "Add healthy carbs for energy"
+      });
+    }
+
+    if (suggestions.length > 0) {
+      result.suggestion.mealCompletionSuggestions = suggestions;
+      const totalAddedCalories = suggestions.reduce((sum, item) => sum + item.macros.calories, 0);
+      const totalAddedProtein = suggestions.reduce((sum, item) => sum + item.macros.protein, 0);
+      const totalAddedCarbs = suggestions.reduce((sum, item) => sum + item.macros.carbs, 0);
+      const totalAddedFat = suggestions.reduce((sum, item) => sum + item.macros.fat, 0);
       
-      result.suggestion.mealCompletionSuggestions = [proteinSuggestion];
       result.suggestion.completeMealMacros = {
-        calories: calories + 130,
-        protein: protein + 20,
-        carbs: carbs + 9,
-        fat: fat
+        calories: calories + totalAddedCalories,
+        protein: protein + totalAddedProtein,
+        carbs: carbs + totalAddedCarbs,
+        fat: fat + totalAddedFat
       };
     }
   }
 
   return result;
 };
+
+
 
 /**
  * Check if image contains food using Groq SDK with retry logic
