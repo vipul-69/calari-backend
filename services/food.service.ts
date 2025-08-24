@@ -131,16 +131,240 @@ const sanitizeNumericValue = (value: any): number => {
 };
 
 /**
+ * Detect if image contains a nutrition label and extract information
+ */
+export const detectAndAnalyzeNutritionLabel = async (
+  imageUrl: string,
+  maxRetries: number = 3
+): Promise<{ isNutritionLabel: boolean; analysis?: any; reason: string }> => {
+  const groq = createGroqClient();
+  
+  const labelDetectionPrompt = `
+You're a nutrition label reading assistant. Analyze this image to determine if it contains a nutrition facts label or nutritional information panel.
+
+## Your Task
+1. Check if the image shows a nutrition facts label, nutrition information panel, or food packaging with nutritional data
+2. If it's a nutrition label, extract all the nutritional information you can see
+3. If it's not a nutrition label, identify what type of image it is
+
+## Response Format (Must be valid JSON)
+If it's a nutrition label:
+{
+  "isNutritionLabel": true,
+  "servingSize": "serving size text",
+  "servingsPerContainer": "number or text",
+  "nutritionalInfo": {
+    "calories": number,
+    "protein": number,
+    "totalCarbs": number,
+    "fat": number,
+    "fiber": number,
+    "sugar": number,
+    "sodium": number
+  },
+  "reason": "what type of nutrition label you found"
+}
+
+If it's NOT a nutrition label:
+{
+  "isNutritionLabel": false,
+  "reason": "description of what you see instead"
+}
+
+## What Counts as Nutrition Label
+✓ Official "Nutrition Facts" panels (US format)
+✓ European nutrition information panels
+✓ Product packaging showing calories, protein, carbs, fat
+✓ Restaurant menu nutritional information
+✓ Supplement facts panels
+✓ Any structured nutritional data display
+
+## What Doesn't Count
+✗ Regular food items without packaging
+✗ Recipes or cooking instructions
+✗ General food photography
+✗ Empty packages without visible nutrition info
+
+## Extraction Guidelines
+- Read all visible nutritional values carefully
+- Convert serving sizes to standard units when possible
+- Extract per-serving values (not per 100g unless that's the serving)
+- Use 0 for any nutrients not visible or listed
+- **ALL nutritional values must be final calculated numbers (no expressions)**
+- If values show ranges (like "2-3g"), use the average
+
+**CRITICAL REQUIREMENTS:**
+- Return ONLY valid JSON with no extra text
+- All macro values must be plain numbers, never mathematical expressions
+- If you can't read a value clearly, use 0
+- Be accurate with the numbers you can see
+- No trailing commas in JSON objects`;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // Convert URL to base64
+      const base64Image = await urlToBase64(imageUrl);
+
+      const completion = await groq.chat.completions.create({
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: labelDetectionPrompt,
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: base64Image,
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 1500,
+      });
+
+      const response = completion.choices[0]?.message?.content || "";
+      
+      // Fix any mathematical expressions and repair JSON
+      const fixedResponse = fixMacrosInJsonString(response);
+      const repairedResponse = repairJsonString(fixedResponse);
+      
+      const jsonMatch = repairedResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          isNutritionLabel: parsed.isNutritionLabel === true,
+          analysis: parsed.isNutritionLabel ? parsed : undefined,
+          reason: parsed.reason || "Analysis completed"
+        };
+      }
+      
+      throw new Error("No valid JSON found in response");
+      
+    } catch (error: any) {
+      console.error(`Nutrition label detection attempt ${attempt + 1} failed:`, error);
+      
+      if (attempt === maxRetries - 1) {
+        return {
+          isNutritionLabel: false,
+          reason: `Error occurred during nutrition label detection: ${error.message}`
+        };
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  return {
+    isNutritionLabel: false,
+    reason: "Unable to analyze nutrition label after multiple attempts"
+  };
+};
+
+/**
+ * Convert nutrition label data to FoodAnalysis format
+ */
+const convertNutritionLabelToFoodAnalysis = (
+  labelData: any,
+  context?: FoodAnalysisContext
+): FoodAnalysis => {
+  const nutritionalInfo = labelData.nutritionalInfo || {};
+  
+  // Extract food name from serving info or use generic name
+  const servingSize = labelData.servingSize || "1 serving";
+  const foodName = `Product (${servingSize})`;
+  
+  // Build food analysis result
+  const result: FoodAnalysis = {
+    foodItems: [
+      {
+        name: foodName,
+        quantity: servingSize,
+        macros: {
+          calories: sanitizeNumericValue(nutritionalInfo.calories || 0),
+          protein: sanitizeNumericValue(nutritionalInfo.protein || 0),
+          carbs: sanitizeNumericValue(nutritionalInfo.totalCarbs || 0),
+          fat: sanitizeNumericValue(nutritionalInfo.fat || 0)
+        }
+      }
+    ],
+    totalMacros: {
+      calories: sanitizeNumericValue(nutritionalInfo.calories || 0),
+      protein: sanitizeNumericValue(nutritionalInfo.protein || 0),
+      carbs: sanitizeNumericValue(nutritionalInfo.totalCarbs || 0),
+      fat: sanitizeNumericValue(nutritionalInfo.fat || 0)
+    }
+  };
+
+  // Add contextual suggestions if context provided
+  if (context) {
+    const calories = result.totalMacros.calories;
+    const protein = result.totalMacros.protein;
+    const carbs = result.totalMacros.carbs;
+    const fat = result.totalMacros.fat;
+    
+    const remaining = {
+      calories: Math.max(0, context.totalMacros.calories - context.consumedMacros.calories),
+      protein: Math.max(0, context.totalMacros.protein - context.consumedMacros.protein),
+      carbs: Math.max(0, context.totalMacros.carbs - context.consumedMacros.carbs),
+      fat: Math.max(0, context.totalMacros.fat - context.consumedMacros.fat),
+    };
+
+    // Simple logic to determine if it fits their goals
+    const fitsCalories = calories <= remaining.calories;
+    const reasonablePortion = calories > 0; // Basic validation
+    
+    result.suggestion = {
+      shouldEat: fitsCalories && reasonablePortion,
+      reason: fitsCalories 
+        ? `This fits well within your remaining ${remaining.calories} calories for today. The nutrition profile shows ${protein}g protein, ${carbs}g carbs, and ${fat}g fat per serving.`
+        : `This has ${calories} calories, which might push you over your remaining budget of ${remaining.calories} calories. Consider having a smaller portion or saving it for tomorrow.`,
+      recommendedQuantity: fitsCalories ? servingSize : `Half serving (${(calories/2).toFixed(0)} calories)`,
+      alternatives: fitsCalories ? [] : [
+        "Have half the serving size",
+        "Save for a day with more calories available",
+        "Pair with a lighter meal"
+      ]
+    };
+
+    // Add simple meal completion suggestions based on missing macros
+    if (remaining.protein > protein + 10) {
+      const proteinSuggestion = {
+        name: "Greek yogurt",
+        quantity: "1 cup (170g)",
+        macros: { calories: 130, protein: 20, carbs: 9, fat: 0 },
+        reason: "Adds protein to help you reach your daily target"
+      };
+      
+      result.suggestion.mealCompletionSuggestions = [proteinSuggestion];
+      result.suggestion.completeMealMacros = {
+        calories: calories + 130,
+        protein: protein + 20,
+        carbs: carbs + 9,
+        fat: fat
+      };
+    }
+  }
+
+  return result;
+};
+
+/**
  * Check if image contains food using Groq SDK with retry logic
  */
 export const validateFoodImage = async (imageUrl: string, maxRetries: number = 3): Promise<{ isFood: boolean; reason: string }> => {
   const groq = createGroqClient();
   
   const validationPrompt = `
-You're a nutrition assistant helping someone track their food. Look at this image and determine if it contains actual food that can be eaten.
+You're a nutrition assistant helping someone track their food. Look at this image and determine if it contains actual food that can be eaten OR a nutrition label with nutritional information.
 
 ## Your Task
-Tell me whether this image shows food or not, and briefly explain what you see.
+Tell me whether this image shows food, nutrition label, or neither, and briefly explain what you see.
 
 ## Response Format
 Give me a JSON response like this:
@@ -149,23 +373,25 @@ Give me a JSON response like this:
   "reason": "what you see in the image"
 }
 
-## What Counts as Food
+## What Counts as Food or Nutrition Information
 ✓ Prepared meals, snacks, fruits, vegetables, beverages, desserts
 ✓ Ready-to-eat items like sandwiches, salads, cooked dishes
 ✓ Raw foods commonly eaten as-is (apples, carrots, nuts)
+✓ Nutrition facts labels or nutritional information panels
+✓ Product packaging with visible nutritional data
 
 ## What Doesn't Count
 ✗ Empty plates, cooking utensils, kitchen equipment
 ✗ People, pets, or non-food objects
 ✗ Raw ingredients that need cooking (raw meat, flour, etc.)
-✗ Food packaging or wrappers without visible food
+✗ Food packaging without visible food or nutrition info
 
 ## CRITICAL RULES
 - Return ONLY valid JSON with the exact format shown above
 - No additional text, explanations, or formatting
 - Use only boolean values (true/false), not strings
 
-Be helpful but accurate - I'm counting on you to identify real food items correctly!`;
+Be helpful but accurate - I'm counting on you to identify real food items or nutrition labels correctly!`;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -786,13 +1012,24 @@ CRITICAL: Calculate all mathematical expressions before including them in the JS
 };
 
 /**
- * Main food analysis function using Groq SDK with enhanced retry logic
+ * Enhanced main food analysis function that handles both regular food and nutrition labels
  */
 export const analyzeFoodFromImage = async (
   imageUrl: string,
   context?: FoodAnalysisContext
 ): Promise<FoodAnalysis> => {
   try {
+    // First, check if this is a nutrition label
+    const labelDetection = await detectAndAnalyzeNutritionLabel(imageUrl);
+    
+    if (labelDetection.isNutritionLabel && labelDetection.analysis) {
+      console.log("Nutrition label detected, using label data");
+      return convertNutritionLabelToFoodAnalysis(labelDetection.analysis, context);
+    }
+    
+    // If not a nutrition label, proceed with regular food analysis
+    console.log("Regular food image detected, proceeding with visual analysis");
+    
     const groq = createGroqClient();
     const analysisPrompt = createFoodAnalysisPrompt(context);
     
@@ -930,7 +1167,7 @@ export const suggestMacrosWithGroq = async (
   fat: number;
   explanation?: string;
 }> => {
-  const groq = createGroqClient();
+  const groqClient = createGroqClient();
 
   const macroPrompt = `
 You're a professional nutritionist AI using USDA standards and evidence-based guidelines. 
@@ -991,8 +1228,7 @@ Provide accurate, science-based recommendations that the user can realistically 
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-
-      const completion = await groq.chat.completions.create({
+      const completion = await groqClient.chat.completions.create({
         model: "meta-llama/llama-4-maverick-17b-128e-instruct",
         messages: [
           {
@@ -1099,7 +1335,6 @@ export const parseUserDetailsString = (userDetailsString: string): Record<string
   
   return details;
 };
-
 
 /**
  * Extract food name and quantity from natural language prompt using Groq SDK with retry logic
