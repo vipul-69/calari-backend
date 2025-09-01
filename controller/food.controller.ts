@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { validateFoodImage, analyzeFoodFromImage, analyzeFoodFromText, validateFoodTextInput } from '../services/food.service';
+import { analyzeFoodFromImage, analyzeFoodFromText } from '../services/food.service';
 import { suggestMacrosWithGroq } from '../services/food.service';
 
 interface FoodAnalysisRequest {
@@ -393,6 +393,7 @@ export const suggestMacros = async (req: Request, res: Response): Promise<void> 
 
 // controllers/foodExtract.controller.ts
 import { extractFoodNameQuantityFromPrompt } from '../services/food.service';
+import { validateFoodImage, validateFoodTextInput } from '../utils/validator';
 
 /**
  * Controller to extract food name and quantity from a natural language prompt
