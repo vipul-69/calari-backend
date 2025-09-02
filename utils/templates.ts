@@ -71,12 +71,6 @@ You're a professional nutrition coach and food pairing expert helping someone tr
   }`;
 
   if (context) {
-    context.totalMacros = {
-      calories: 0,
-      protein: 0,
-      carbs: 0,
-      fat: 0,
-    };
     prompt += `,
   "suggestion": {
     "shouldEat": boolean,
@@ -117,12 +111,6 @@ You're a professional nutrition coach and food pairing expert helping someone tr
 - No trailing commas in JSON objects or arrays`;
 
   if (context) {
-    context.totalMacros = {
-      calories: 0,
-      protein: 0,
-      carbs: 0,
-      fat: 0,
-    };
     const remaining = {
       calories: Math.max(
         0,
@@ -282,12 +270,6 @@ You're an expert nutrition coach and culinary advisor helping someone optimize t
   }`;
 
   if (context) {
-    context.totalMacros = {
-      calories: 0,
-      protein: 0,
-      carbs: 0,
-      fat: 0,
-    };
     textAnalysisPrompt += `,
   "suggestion": {
     "shouldEat": boolean,
@@ -329,12 +311,6 @@ You're an expert nutrition coach and culinary advisor helping someone optimize t
 - No trailing commas in JSON objects or arrays`;
 
   if (context) {
-    context.totalMacros = {
-      calories: 0,
-      protein: 0,
-      carbs: 0,
-      fat: 0,
-    };
     const remaining = {
       calories: Math.max(
         0,
