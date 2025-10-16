@@ -20,5 +20,5 @@ app.use("/upload", clerkMiddleware(), requireAuth(), uploadRoutes);
 app.use("/meals", clerkMiddleware(), requireAuth(), mealRoutes);
 app.use("/recipes", clerkMiddleware(), requireAuth(), recipesRoutes);
 app.use("/payments", clerkMiddleware(), requireAuth(), paymentRoutes);
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {});
